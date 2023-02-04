@@ -196,18 +196,17 @@ seqs = ori_sequence.replace("/","").split(":")
 if len(seqs) != len(homooligomers):
   if len(homooligomers) == 1:
     homooligomers = [homooligomers[0]] * len(seqs)
-    homooligomer = ":".join([str(h) for h in homooligomers])
   else:
     while len(seqs) > len(homooligomers):
       homooligomers.append(1)
     homooligomers = homooligomers[:len(seqs)]
-    homooligomer = ":".join([str(h) for h in homooligomers])
     print("WARNING: Mismatch between number of breaks ':' in 'sequence' and 'homooligomer' definition")
 
+  homooligomer = ":".join([str(h) for h in homooligomers])
 full_sequence = "".join([s*h for s,h in zip(seqs,homooligomers)])
 
 # prediction directory
-output_dir = 'prediction_' + jobname + '_' + cf.get_hash(full_sequence)[:5]
+output_dir = f'prediction_{jobname}_{cf.get_hash(full_sequence)[:5]}'
 os.makedirs(output_dir, exist_ok=True)
 # delete existing files in working directory
 for f in os.listdir(output_dir):
@@ -492,7 +491,7 @@ save_pae_json = True
 save_tmp_pdb = True
 
 
-if use_ptm == False and rank_by == "pTMscore":
+if not use_ptm and rank_by == "pTMscore":
   print("WARNING: models will be ranked by pLDDT, 'use_ptm' is needed to compute pTMscore")
   rank_by = "pLDDT"
 
@@ -523,7 +522,7 @@ def _placeholder_template_feats(num_templates_, num_res_):
 
 num_res = len(full_sequence)
 feature_dict = {}
-feature_dict.update(pipeline.make_sequence_features(full_sequence, 'test', num_res))
+feature_dict |= pipeline.make_sequence_features(full_sequence, 'test', num_res)
 feature_dict.update(pipeline.make_msa_features(msas_mod, deletion_matrices=deletion_matrices_mod))
 if not use_turbo:
   feature_dict.update(_placeholder_template_feats(0, num_res))
@@ -533,21 +532,21 @@ def do_subsample_msa(F, random_seed=0):
   N = len(F["msa"])
   L = len(F["residue_index"])
   N_ = int(3E7/L)
-  if N > N_:
-    print(f"whhhaaa... too many sequences ({N}) subsampling to {N_}")
-    np.random.seed(random_seed)
-    idx = np.append(0,np.random.permutation(np.arange(1,N)))[:N_]
-    F_ = {}
-    F_["msa"] = F["msa"][idx]
-    F_["deletion_matrix_int"] = F["deletion_matrix_int"][idx]
-    F_["num_alignments"] = np.full_like(F["num_alignments"],N_)
-    for k in ['aatype', 'between_segment_residues',
-              'domain_name', 'residue_index',
-              'seq_length', 'sequence']:
-              F_[k] = F[k]
-    return F_
-  else:
+  if N <= N_:
     return F
+  print(f"whhhaaa... too many sequences ({N}) subsampling to {N_}")
+  np.random.seed(random_seed)
+  idx = np.append(0,np.random.permutation(np.arange(1,N)))[:N_]
+  F_ = {
+      "msa": F["msa"][idx],
+      "deletion_matrix_int": F["deletion_matrix_int"][idx],
+      "num_alignments": np.full_like(F["num_alignments"], N_),
+  }
+  for k in ['aatype', 'between_segment_residues',
+            'domain_name', 'residue_index',
+            'seq_length', 'sequence']:
+            F_[k] = F[k]
+  return F_
 
 ################################
 # set chain breaks
@@ -555,7 +554,7 @@ def do_subsample_msa(F, random_seed=0):
 Ls = []
 for seq,h in zip(ori_sequence.split(":"),homooligomers):
   Ls += [len(s) for s in seq.split("/")] * h
-Ls_plot = sum([[len(seq)]*h for seq,h in zip(seqs,homooligomers)],[])
+Ls_plot = sum(([len(seq)]*h for seq,h in zip(seqs,homooligomers)), [])
 feature_dict['residue_index'] = cf.chain_break(feature_dict['residue_index'], Ls)
 
 ###########################
@@ -574,8 +573,10 @@ def parse_results(prediction_result, processed_feature_dict):
          "adj": contact_mtx}
 
   if "ptm" in prediction_result:
-    out.update({"pae": prediction_result['predicted_aligned_error'],
-                "pTMscore": prediction_result['ptm']})
+    out |= {
+        "pae": prediction_result['predicted_aligned_error'],
+        "pTMscore": prediction_result['ptm'],
+    }
   return out
 
 model_names = ['model_1', 'model_2', 'model_3', 'model_4', 'model_5'][:num_models]
@@ -743,7 +744,7 @@ if num_relax > 0:
     from alphafold.relax import utils
 
   with tqdm.notebook.tqdm(total=num_relax, bar_format=TQDM_BAR_FORMAT) as pbar:
-    pbar.set_description(f'AMBER relaxation')
+    pbar.set_description('AMBER relaxation')
     for n,key in enumerate(model_rank):
       if n < num_relax:
         prefix = f"rank_{n+1}_{key}"
@@ -788,22 +789,38 @@ save_pae_json = True #@param {type:"boolean"}
 if use_ptm:
   print("predicted alignment error")
   cf.plot_paes([outs[k]["pae"] for k in model_rank], Ls=Ls_plot, dpi=dpi)
-  plt.savefig(os.path.join(output_dir,f'predicted_alignment_error.png'), bbox_inches = 'tight', dpi=np.maximum(200,dpi))
+  plt.savefig(
+      os.path.join(output_dir, 'predicted_alignment_error.png'),
+      bbox_inches='tight',
+      dpi=np.maximum(200, dpi),
+  )
   # plt.show()
 
 print("predicted contacts")
 cf.plot_adjs([outs[k]["adj"] for k in model_rank], Ls=Ls_plot, dpi=dpi)
-plt.savefig(os.path.join(output_dir,f'predicted_contacts.png'), bbox_inches = 'tight', dpi=np.maximum(200,dpi))
+plt.savefig(
+    os.path.join(output_dir, 'predicted_contacts.png'),
+    bbox_inches='tight',
+    dpi=np.maximum(200, dpi),
+)
 # plt.show()
 
 print("predicted distogram")
 cf.plot_dists([outs[k]["dists"] for k in model_rank], Ls=Ls_plot, dpi=dpi)
-plt.savefig(os.path.join(output_dir,f'predicted_distogram.png'), bbox_inches = 'tight', dpi=np.maximum(200,dpi))
+plt.savefig(
+    os.path.join(output_dir, 'predicted_distogram.png'),
+    bbox_inches='tight',
+    dpi=np.maximum(200, dpi),
+)
 # plt.show()
 
 print("predicted LDDT")
 cf.plot_plddts([outs[k]["plddt"] for k in model_rank], Ls=Ls_plot, dpi=dpi)
-plt.savefig(os.path.join(output_dir,f'predicted_LDDT.png'), bbox_inches = 'tight', dpi=np.maximum(200,dpi))
+plt.savefig(
+    os.path.join(output_dir, 'predicted_LDDT.png'),
+    bbox_inches='tight',
+    dpi=np.maximum(200, dpi),
+)
 # plt.show()
 
 def do_save_to_txt(filename, adj, dists):
